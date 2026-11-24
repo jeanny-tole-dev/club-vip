@@ -405,7 +405,7 @@
     }
 
     .powered-by {
-      margin-top: 10px;
+      margin-top: 14px;
       font-size: 11.5px;
       color: rgba(255,255,255,0.88);
       text-shadow: 0 1px 2px rgba(0,0,0,0.25);
@@ -614,7 +614,7 @@
       </div>
     </div>
 
-    <button type="button" class="btn-candado-trigger" onclick="abrirModalCajero()">
+    <button type="button" class="btn-candado-trigger" id="btnCandado" style="display:none;" onclick="abrirModalCajero()">
       🔒 Panel Comercio
     </button>
     <div class="powered-by">Tecnología de Fidelización • Ojea Digital</div>
@@ -717,12 +717,14 @@
       <button type="button" class="btn-outline" onclick="cerrarModalCajero()">Cerrar panel</button>
     </div>
   </div>
-      <script>
+
+  <script>
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz2rLxSuLGgJ2ISzFvBdaQiXc83NRFcUIFiZRyfKS-nUTKNqDHu2G6snvHO_iJfv_yb/exec';
 
     const params = new URLSearchParams(window.location.search);
     const API_URL = params.get('api') || DEFAULT_API_URL;
     const PASS_ID_URL = params.get('id') || '';
+    const ES_MODO_PANEL = params.get('panel') === '1' || params.get('caja') === '1';
     const CACHE_KEY_CFG = 'ojea_cfg_' + btoa(API_URL).slice(0, 16);
     const CACHE_KEY_CLI = 'ojea_cli_' + btoa(API_URL).slice(0, 16);
 
@@ -730,6 +732,7 @@
     let clienteActual = null;
     let modoCajaActual = 'RAPIDO';
     let nieveCreada = false;
+    let panelAutoAbierto = false;
 
     const inputCelular = document.getElementById('celular');
     inputCelular.addEventListener('input', function() {
@@ -763,6 +766,8 @@
     function urlBaseSinId() {
       const u = new URL(window.location.href);
       u.searchParams.delete('id');
+      u.searchParams.delete('panel');
+      u.searchParams.delete('caja');
       return u.toString();
     }
 
@@ -835,6 +840,15 @@
       document.body.classList.add('listo');
       document.getElementById('loaderScreen').style.display = 'none';
       document.getElementById('appShell').style.display = 'flex';
+
+      if (ES_MODO_PANEL) {
+        const btnC = document.getElementById('btnCandado');
+        if (btnC) btnC.style.display = 'inline-flex';
+        if (!panelAutoAbierto) {
+          panelAutoAbierto = true;
+          abrirModalCajero();
+        }
+      }
     }
 
     function renderizarTarjetaDigital(cliente, yaRegistrado) {
@@ -1145,7 +1159,7 @@
       )).join('');
     }
 
-      function crearNieve() {
+    function crearNieve() {
       for (let i = 0; i < 24; i++) {
         const flake = document.createElement('div');
         flake.className = 'snowflake';
