@@ -1,0 +1,430 @@
+/**
+ * API Backend para Club VIP — Ojea Digital (GitHub Pages + Google Sheets)
+ */
+
+const CONFIG = {
+  SHEET_CONFIG: 'Config',
+  SHEET_CLIENTES: 'Clientes',
+  SHEET_LOGS: 'Logs'
+};
+
+function respuestaJson(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doGet(e) {
+  try {
+    const params = (e && e.parameter) ? e.parameter : {};
+    const action = String(params.action || 'config').trim();
+
+    if (action === 'config') {
+      return respuestaJson({ ok: true, config: obtenerConfigPublica() });
+    }
+    if (action === 'tarjeta') {
+      return respuestaJson(obtenerTarjetaPorPassId(params.id || ''));
+    }
+    return respuestaJson({ ok: true, mensaje: 'API Club VIP Ojea Digital activa' });
+  } catch (err) {
+    return respuestaJson({ ok: false, error: err.message });
+  }
+}
+
+function doPost(e) {
+  try {
+    const raw = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
+    const body = JSON.parse(raw);
+    const action = String(body.action || '').trim();
+
+    if (action === 'registrar') return respuestaJson(registrarCliente(body));
+    if (action === 'compra') return respuestaJson(registrarCompraDesdeWeb(body));
+    if (action === 'panel') return respuestaJson(obtenerPanelComercio(body.claveComercio || ''));
+    if (action === 'tarjeta') return respuestaJson(obtenerTarjetaPorPassId(body.id || ''));
+    return respuestaJson({ ok: false, error: 'Acción no reconocida: ' + action });
+  } catch (err) {
+    return respuestaJson({ ok: false, error: 'Error servidor: ' + err.message });
+  }
+}
+
+function getConfig() {
+  const sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_CONFIG);
+  const data = sheet.getRange('A1:B50').getValues();
+  const config = {};
+  data.forEach(row => {
+    if (row[0]) config[String(row[0]).trim()] = row[1];
+  });
+  return config;
+}
+
+function normalizarUrl(url) {
+  const u = String(url || '').trim();
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u)) return u;
+  return 'https://' + u;
+}
+
+function agregarFilaDesdeArriba(sheet, valores) {
+  const ultimaFila = Math.max(sheet.getLastRow(), 2);
+  const colA = sheet.getRange(1, 1, ultimaFila, 1).getValues();
+  let filaDestino = -1;
+
+  for (let i = 1; i < colA.length; i++) {
+    if (!String(colA[i][0]).trim()) { filaDestino = i + 1; break; }
+  }
+
+  if (filaDestino !== -1) {
+    sheet.getRange(filaDestino, 1, 1, valores.length).setValues([valores]);
+  } else {
+    sheet.getRange(colA.length + 1, 1, 1, valores.length).setValues([valores]);
+  }
+}
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Club VIP Ojea')
+    .addItem('Activar revisión diaria de inactividad', 'crearTriggerInactividad')
+    .addToUi();
+}
+
+function obtenerConfigPublica() {
+  const config = getConfig();
+  return {
+    NombreNegocio: String(config.NombreNegocio || 'Ojea Digital').trim(),
+    NombrePrograma: String(config.NombrePrograma || 'Club VIP').trim(),
+    Premio: String(config.Premio || 'Recompensa exclusiva al completar tus sellos').trim(),
+    TextoSellos: String(config.TextoSellos || 'Sellos').trim(),
+    MetaSellos: Number(config.MetaSellos) || 8,
+    TextoBienvenida: String(config.TextoBienvenida || 'Únete a nuestro Club VIP y acumula premios en cada compra.').trim(),
+    LogoUrl: String(config.LogoUrl || '').trim(),
+    BannerUrl: String(config.BannerUrl || '').trim(),
+    TextoGracias: String(config.TextoGracias || '¡Gracias por hacer parte de nuestro club!').trim(),
+    ColorFondo: String(config.ColorFondo || '#00473e').trim(),
+    Instagram: normalizarUrl(config.Instagram),
+    WhatsApp: normalizarUrl(config.WhatsApp),
+    SitioWeb: normalizarUrl(config.SitioWeb),
+    LinkMenu: normalizarUrl(config.LinkMenu),
+    TextoMenu: String(config.TextoMenu || 'Ver catálogo').trim(),
+    MostrarPIN: String(config.MostrarPIN || 'SI').trim().toUpperCase() !== 'NO',
+    EfectoNavidad: String(config.EfectoNavidad || 'NO').trim().toUpperCase() === 'SI'
+  };
+}
+
+function validarClaveComercioSeguro(claveIngresada) {
+  const cache = CacheService.getScriptCache();
+  const intentosFallidos = Number(cache.get('INTENTOS_FALLIDOS_CAJERO') || 0);
+
+  if (intentosFallidos >= 3) {
+    return { ok: false, error: '🔒 Acceso bloqueado por seguridad tras 3 intentos fallidos. Intenta en 15 minutos.' };
+  }
+
+  const config = getConfig();
+  const claveReal = String(config.ClaveComercio || '').trim();
+  if (!claveReal) return { ok: false, error: '⚠️ Falta configurar ClaveComercio en la hoja Config.' };
+
+  if (String(claveIngresada || '').trim() !== claveReal) {
+    const nuevos = intentosFallidos + 1;
+    cache.put('INTENTOS_FALLIDOS_CAJERO', String(nuevos), 900);
+    const restantes = Math.max(0, 3 - nuevos);
+    return {
+      ok: false,
+      error: restantes > 0
+        ? '❌ Clave incorrecta. Te quedan ' + restantes + ' intento(s).'
+        : '🔒 Acceso bloqueado por 15 minutos por seguridad.'
+    };
+  }
+
+  cache.remove('INTENTOS_FALLIDOS_CAJERO');
+  return { ok: true, config: config };
+}
+
+function obtenerTarjetaPorPassId(passId) {
+  const idBuscado = String(passId || '').trim();
+  if (!idBuscado) return { ok: false, error: 'ID vacío' };
+
+  const sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_CLIENTES);
+  const data = sheet.getDataRange().getValues();
+  const config = getConfig();
+  const mostrarPIN = String(config.MostrarPIN || 'SI').trim().toUpperCase() !== 'NO';
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][5]).trim() === idBuscado) {
+      return {
+        ok: true,
+        cliente: {
+          nombre: String(data[i][0]).trim(),
+          celular: String(data[i][1]).replace(/\D/g, '').trim(),
+          pin: mostrarPIN ? String(data[i][2]).trim() : '',
+          sellos: Number(data[i][3]) || 0,
+          passId: idBuscado,
+          metaSellos: Number(config.MetaSellos) || 8,
+          premio: String(config.Premio || 'Recompensa especial').trim(),
+          textoSellos: String(config.TextoSellos || 'Sellos').trim()
+        }
+      };
+    }
+  }
+  return { ok: false, error: 'Tarjeta no encontrada.' };
+}
+
+function registrarCliente(datos) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+
+    const sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_CLIENTES);
+    const config = getConfig();
+    const maxClientes = Number(config.MaxClientes) || 500;
+    const metaSellos = Number(config.MetaSellos) || 8;
+    const mostrarPIN = String(config.MostrarPIN || 'SI').trim().toUpperCase() !== 'NO';
+    const celularLimpio = String(datos.celular || '').replace(/\D/g, '').trim();
+    const nombreLimpio = String(datos.nombre || '').trim();
+
+    if (nombreLimpio.length < 2) return { ok: false, error: 'Ingresa tu nombre.' };
+    if (!/^3\d{9}$/.test(celularLimpio)) return { ok: false, error: 'Ingresa un celular colombiano de 10 dígitos.' };
+
+    const data = sheet.getDataRange().getValues();
+    let clientesActivos = 0;
+
+    for (let i = 1; i < data.length; i++) {
+      const nombreFila = String(data[i][0]).trim();
+      const celularFila = String(data[i][1]).replace(/\D/g, '').trim();
+      const estadoFila = String(data[i][6]).trim();
+
+      if (nombreFila && estadoFila === 'Activo') clientesActivos++;
+
+      if (celularFila === celularLimpio) {
+        const sellosActuales = Number(data[i][3]) || 0;
+        const pinGuardado = String(data[i][2]).trim() || String(Math.floor(1000 + Math.random() * 9000));
+        const passIdExistente = String(data[i][5]).trim() || ('cli' + new Date().getTime());
+
+        if (!String(data[i][2]).trim()) sheet.getRange(i + 1, 3).setValue(pinGuardado);
+        if (!String(data[i][5]).trim()) sheet.getRange(i + 1, 6).setValue(passIdExistente);
+
+        return {
+          ok: true,
+          yaRegistrado: true,
+          cliente: {
+            nombre: nombreFila || nombreLimpio,
+            celular: celularLimpio,
+            sellos: sellosActuales,
+            metaSellos: metaSellos,
+            premio: String(config.Premio || 'Recompensa especial').trim(),
+            textoSellos: String(config.TextoSellos || 'Sellos').trim(),
+            pin: mostrarPIN ? pinGuardado : '',
+            passId: passIdExistente
+          }
+        };
+      }
+    }
+
+    if (clientesActivos >= maxClientes) {
+      return { ok: false, error: 'El club alcanzó su cupo máximo de miembros activos.' };
+    }
+
+    const passId = 'cli' + new Date().getTime();
+    const pin = String(Math.floor(1000 + Math.random() * 9000));
+    const fecha = new Date();
+
+    agregarFilaDesdeArriba(sheet, [nombreLimpio, celularLimpio, pin, 0, fecha, passId, 'Activo', fecha]);
+    const logs = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_LOGS);
+    agregarFilaDesdeArriba(logs, [fecha, passId, 'Nuevo registro', 0, celularLimpio]);
+
+    return {
+      ok: true,
+      yaRegistrado: false,
+      cliente: {
+        nombre: nombreLimpio,
+        celular: celularLimpio,
+        sellos: 0,
+        metaSellos: metaSellos,
+        premio: String(config.Premio || 'Recompensa especial').trim(),
+        textoSellos: String(config.TextoSellos || 'Sellos').trim(),
+        pin: mostrarPIN ? pin : '',
+        passId: passId
+      }
+    };
+  } catch (e) {
+    return { ok: false, error: 'Error: ' + e.message };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function registrarCompraDesdeWeb(datos) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+
+    const auth = validarClaveComercioSeguro(datos.claveComercio);
+    if (!auth.ok) return auth;
+    const config = auth.config;
+
+    const sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_CLIENTES);
+    const data = sheet.getDataRange().getValues();
+    const modo = datos.modo || 'RAPIDO';
+    let filaEncontrada = -1;
+
+    if (modo === 'QR') {
+      const codigoQR = String(datos.passId || '').trim();
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][5]).trim() === codigoQR) { filaEncontrada = i + 1; break; }
+      }
+      if (filaEncontrada === -1) return { ok: false, error: 'No se encontró cliente con código ' + codigoQR };
+    } else {
+      const celularBuscado = String(datos.celular || '').replace(/\D/g, '').trim();
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][1]).replace(/\D/g, '').trim() === celularBuscado) { filaEncontrada = i + 1; break; }
+      }
+      if (filaEncontrada === -1) return { ok: false, error: 'No se encontró cliente con celular ' + celularBuscado };
+
+      if (modo === 'PIN') {
+        if (String(data[filaEncontrada - 1][2]).trim() !== String(datos.pin || '').trim()) {
+          return { ok: false, error: '❌ El PIN del cliente no coincide.' };
+        }
+      }
+    }
+
+    const nombreCliente = String(data[filaEncontrada - 1][0]).trim();
+    const celularCliente = String(data[filaEncontrada - 1][1]).replace(/\D/g, '').trim();
+    const passId = String(data[filaEncontrada - 1][5]).trim();
+    const sellosActuales = Number(data[filaEncontrada - 1][3]) || 0;
+    const metaSellos = Number(config.MetaSellos) || 8;
+    const nuevosSellos = datos.reiniciarPremio ? 0 : (sellosActuales + 1);
+
+    sheet.getRange(filaEncontrada, 4).setValue(nuevosSellos);
+    sheet.getRange(filaEncontrada, 7).setValue('Activo');
+    sheet.getRange(filaEncontrada, 8).setValue(new Date());
+
+    const logs = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_LOGS);
+    const accionLog = datos.reiniciarPremio ? 'Premio canjeado (Reinicio)' : ('Compra Móvil (' + modo + ')');
+    agregarFilaDesdeArriba(logs, [new Date(), passId, accionLog, nuevosSellos, celularCliente]);
+
+    const cumplioMeta = !datos.reiniciarPremio && nuevosSellos >= metaSellos;
+    const faltan = Math.max(0, metaSellos - nuevosSellos);
+    const nombreNegocio = String(config.NombreNegocio || 'nuestro negocio').trim();
+    const premio = String(config.Premio || 'tu recompensa').trim();
+    const urlTarjeta = datos.appUrl ? (datos.appUrl + (datos.appUrl.indexOf('?') === -1 ? '?' : '&') + 'id=' + passId) : '';
+
+    let mensajeWa = '';
+    if (datos.reiniciarPremio) {
+      mensajeWa = '¡Hola ' + nombreCliente + '! 🎉 Gracias por canjear tu premio (' + premio + ') en ' + nombreNegocio + '. Tu tarjeta se reinició lista para seguir acumulando.';
+    } else if (cumplioMeta) {
+      mensajeWa = '¡Felicidades ' + nombreCliente + '! 🏆 Ya completaste tus ' + metaSellos + ' sellos en ' + nombreNegocio + '. ¡Ya puedes reclamar tu premio: ' + premio + '!';
+    } else {
+      mensajeWa = '¡Hola ' + nombreCliente + '! ✅ Sumamos 1 sello a tu tarjeta VIP de ' + nombreNegocio + '. Llevas ' + nuevosSellos + ' de ' + metaSellos + ' (¡solo te faltan ' + faltan + ' para ganar ' + premio + '!).';
+    }
+    if (urlTarjeta) mensajeWa += '\n\nMira tu tarjeta aquí: ' + urlTarjeta;
+
+    return {
+      ok: true,
+      nombre: nombreCliente,
+      celular: celularCliente,
+      nuevosSellos: nuevosSellos,
+      metaSellos: metaSellos,
+      cumplioMeta: cumplioMeta,
+      premio: premio,
+      whatsappUrl: 'https://wa.me/57' + celularCliente + '?text=' + encodeURIComponent(mensajeWa)
+    };
+  } catch (e) {
+    return { ok: false, error: 'Error: ' + e.message };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function obtenerPanelComercio(claveComercio) {
+  const auth = validarClaveComercioSeguro(claveComercio);
+  if (!auth.ok) return auth;
+  const config = auth.config;
+
+  const sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_CLIENTES);
+  const data = sheet.getDataRange().getValues();
+  const logsData = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_LOGS).getDataRange().getValues();
+
+  const metaSellos = Number(config.MetaSellos) || 8;
+  const diasAviso1 = Number(config.DiasAviso1) || 15;
+  const mensajeAviso1 = String(config.MensajeAviso1 || '¡Te extrañamos! Vuelve pronto y sigue sumando sellos.').trim();
+  const nombreNegocio = String(config.NombreNegocio || 'nuestro negocio').trim();
+  const premio = String(config.Premio || 'tu premio').trim();
+  const hoy = new Date();
+
+  let totalActivos = 0;
+  let totalSellos = 0;
+  let premiosCanjeados = 0;
+  const cercaPremio = [];
+  const inactivos = [];
+
+  for (let i = 1; i < logsData.length; i++) {
+    if (String(logsData[i][2] || '').indexOf('Premio canjeado') !== -1) premiosCanjeados++;
+  }
+
+  for (let i = 1; i < data.length; i++) {
+    const nombre = String(data[i][0] || '').trim();
+    const celular = String(data[i][1] || '').replace(/\D/g, '').trim();
+    if (!nombre || !celular) continue;
+
+    const sellos = Number(data[i][3]) || 0;
+    const estado = String(data[i][6] || 'Activo').trim();
+    const ultimaFecha = data[i][7] || data[i][4];
+    const diasSinComprar = ultimaFecha
+      ? Math.max(0, Math.floor((hoy - new Date(ultimaFecha)) / (1000 * 60 * 60 * 24)))
+      : 0;
+
+    if (estado === 'Activo') totalActivos++;
+    totalSellos += sellos;
+
+    const item = { nombre, celular, sellos, metaSellos, diasSinComprar };
+
+    if (sellos >= Math.max(1, metaSellos - 2)) {
+      const faltan = Math.max(0, metaSellos - sellos);
+      const txt = faltan === 0
+        ? '¡Hola ' + nombre + '! 🏆 Ya tienes listo tu premio (' + premio + ') en ' + nombreNegocio + '. ¿Cuándo pasas por él?'
+        : '¡Hola ' + nombre + '! ✨ Te faltan solo ' + faltan + ' sello(s) en ' + nombreNegocio + ' para llevarte ' + premio + '. ¡Te esperamos!';
+      cercaPremio.push(Object.assign({}, item, { waUrl: 'https://wa.me/57' + celular + '?text=' + encodeURIComponent(txt) }));
+    }
+
+    if (diasSinComprar >= diasAviso1) {
+      const txtInactivo = '¡Hola ' + nombre + '! 👋 En ' + nombreNegocio + ' ' + mensajeAviso1 + ' Recuerda que ya llevas ' + sellos + ' de ' + metaSellos + ' sellos.';
+      inactivos.push(Object.assign({}, item, { waUrl: 'https://wa.me/57' + celular + '?text=' + encodeURIComponent(txtInactivo) }));
+    }
+  }
+
+  return {
+    ok: true,
+    metricas: { totalActivos, totalSellos, premiosCanjeados, diasAviso1 },
+    cercaPremio: cercaPremio.slice(0, 30),
+    inactivos: inactivos.slice(0, 30)
+  };
+}
+
+function revisarInactividad() {
+  const config = getConfig();
+  const diasInactivar = Number(config.DiasEliminar) || 90;
+  const sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_CLIENTES);
+  const data = sheet.getDataRange().getValues();
+  const hoy = new Date();
+
+  for (let i = data.length - 1; i >= 1; i--) {
+    const nombreFila = String(data[i][0]).trim();
+    const ultimaCompra = data[i][7] || data[i][4];
+    const passId = data[i][5];
+    const estado = String(data[i][6] || '').trim();
+    if (!nombreFila || !ultimaCompra || estado === 'Inactivo') continue;
+
+    const diasSinComprar = Math.floor((hoy - new Date(ultimaCompra)) / (1000 * 60 * 60 * 24));
+    if (diasSinComprar >= diasInactivar) {
+      sheet.getRange(i + 1, 7).setValue('Inactivo');
+      const logs = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET_LOGS);
+      agregarFilaDesdeArriba(logs, [new Date(), passId, 'Marcado Inactivo', '', diasSinComprar + ' días sin comprar']);
+    }
+  }
+}
+
+function crearTriggerInactividad() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'revisarInactividad') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('revisarInactividad').timeBased().everyDays(1).atHour(8).create();
+  SpreadsheetApp.getUi().alert('¡Revisión diaria de inactividad activada!');
+}
