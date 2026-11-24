@@ -1145,17 +1145,17 @@
       )).join('');
     }
 
-    function crearNieve() {
-      for (let i = 0; i < 16; i++) {
+      function crearNieve() {
+      for (let i = 0; i < 24; i++) {
         const flake = document.createElement('div');
         flake.className = 'snowflake';
         flake.innerHTML = '❄';
         flake.style.left = Math.random() * 100 + 'vw';
-        flake.style.top = '-30px';
-        flake.style.animationDuration = (Math.random() * 8 + 7) + 's';
-        flake.style.animationDelay = Math.random() * 8 + 's';
-        flake.style.fontSize = (Math.random() * 11 + 11) + 'px';
-        flake.style.opacity = Math.random() * 0.35 + 0.3;
+        flake.style.top = '-40px';
+        flake.style.animationDuration = (Math.random() * 7 + 6) + 's';
+        flake.style.animationDelay = Math.random() * 6 + 's';
+        flake.style.fontSize = (Math.random() * 18 + 18) + 'px';
+        flake.style.opacity = Math.random() * 0.4 + 0.45;
         document.body.appendChild(flake);
       }
     }
