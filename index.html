@@ -1712,20 +1712,38 @@
     function renderizarMicroHistorial(cliente, meta, unidad) {
       const box = document.getElementById('passHistoryDrawer');
       const passId = String(cliente.passId || '');
-      const digitosTs = parseInt(passId.replace(/\D/g, ''), 10);
+      const digitosTs = cliente.fechaRegistro || parseInt(passId.replace(/\D/g, ''), 10);
       const fechaAfiliacion = (digitosTs && digitosTs > 1600000000000 && digitosTs < 2100000000000)
         ? formatearFechaCorta(digitosTs)
         : 'Cuenta verificada';
+
+      if (Array.isArray(cliente.historial) && cliente.historial.length > 0) {
+        box.innerHTML = cliente.historial.slice(0, 3).map(item => {
+          const esCanje = String(item.accion || '').toLowerCase().indexOf('canje') !== -1;
+          const esRegistro = String(item.accion || '').toLowerCase().indexOf('registro') !== -1;
+          const icono = esCanje ? '#i-gift' : (esRegistro ? '#i-sparkles' : '#i-check');
+          const textoAccion = esCanje
+            ? 'Premio canjeado (reinicio a 0)'
+            : (esRegistro ? 'Afiliación al Club VIP' : ('Visita registrada (' + (item.sellos !== null ? item.sellos + '/' + meta : '+1 sello') + ')'));
+          return (
+            '<div class="history-row">' +
+              '<span class="history-label"><svg class="icon-svg sm"><use href="' + icono + '"/></svg> ' + textoAccion + '</span>' +
+              '<span class="history-date">' + formatearFechaCorta(item.fecha) + '</span>' +
+            '</div>'
+          );
+        }).join('');
+        return;
+      }
 
       const eventos = registrarEventoHistorialLocal(passId, Number(cliente.sellos || 0));
       let html = '';
 
       if (Number(cliente.sellos || 0) > 0) {
-        const fechaUltima = eventos.length ? formatearFechaCorta(eventos[0].ts) : 'Sincronizado hoy';
+        const tsUlt = cliente.ultimaVisita || (eventos.length ? eventos[0].ts : Date.now());
         html +=
           '<div class="history-row">' +
-            '<span class="history-label"><svg class="icon-svg sm"><use href="#i-check"/></svg> Último saldo (' + cliente.sellos + ' de ' + meta + ' ' + unidad.toLowerCase() + ')</span>' +
-            '<span class="history-date">' + fechaUltima + '</span>' +
+            '<span class="history-label"><svg class="icon-svg sm"><use href="#i-check"/></svg> Última visita (' + cliente.sellos + ' de ' + meta + ' ' + unidad.toLowerCase() + ')</span>' +
+            '<span class="history-date">' + formatearFechaCorta(tsUlt) + '</span>' +
           '</div>';
       } else {
         html +=
